@@ -21,10 +21,7 @@ SRC_DIR = PROJECT_ROOT / "src"
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from lunar_lander_cvrl.models.cv import SimpleCNNRegressor
-from lunar_lander_cvrl.vision import StateRegressorResNet18
-
-MODEL_TYPES = ("resnet18", "simple-cnn")
+from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES, build_cv_model
 
 
 @dataclass(frozen=True)
@@ -183,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-type",
-        choices=MODEL_TYPES,
+        choices=CV_MODEL_TYPES,
         default="resnet18",
         help="CV regressor architecture to train.",
     )
@@ -445,11 +442,7 @@ def make_loaders(
 
 
 def build_model(model_type: str, out_dim: int) -> nn.Module:
-    if model_type == "resnet18":
-        return StateRegressorResNet18(out_dim=out_dim)
-    if model_type == "simple-cnn":
-        return SimpleCNNRegressor(out_dim=out_dim)
-    raise ValueError(f"Unsupported model type: {model_type}")
+    return build_cv_model(model_type, out_dim=out_dim)
 
 
 def run_epoch(

@@ -1,33 +1,42 @@
 # CV-RL LunarLander
 
-## Git-политика
+Проект для экспериментов на стыке computer vision и reinforcement learning в
+среде `LunarLander-v3`. Идея пайплайна: CV-модель получает RGB-кадр симулятора,
+предсказывает состояние аппарата, а RL-агент использует это состояние как
+наблюдение для управления посадкой.
 
-В git должны попадать исходный код, notebooks, README, JSON metadata и конфиги
-проекта. Локальные данные и артефакты обучения не коммитятся:
+Проект сделан как пет-проект с возможностью менять обе части:
 
-- `data/images/` и `data/labels.csv` генерируются через
-  `notebooks/00_data/01_generate_images.ipynb`;
-- checkpoint'ы моделей (`*.pth`, `*.pt`, `*.onnx`), SB3-архивы (`*.zip`) и
-  replay buffer'ы (`*.pkl`) остаются локально;
-- `runs/`, GIF/PNG/CSV визуализаций, Python/Jupyter-кэши и виртуальные
-  окружения исключены через `.gitignore`.
+- CV-регрессор: можно выбирать архитектуру и набор target-полей через
+  `train_cv.py` и `data/cv_integrations/*/metadata.json`.
+- RL-агент: текущий CLI обучает Stable-Baselines3 DQN, а структура
+  `src/lunar_lander_cvrl/models/rl/` и `checkpoints/rl/` подготовлена под
+  будущие версии агентов.
 
-После клонирования проекта сначала установите зависимости, затем пересоздайте
-датасет через notebook генерации, если он нужен для обучения CV.
-
-Этот проект объединяет компьютерное зрение и reinforcement learning для
-`LunarLander-v3`. Ноутбуки генерируют отрендеренные кадры LunarLander и обучают
-ResNet18-регрессор, который предсказывает позу аппарата по изображениям.
-
-Текущий checkpoint
-`checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth` предсказывает:
+## Структура
 
 ```text
-[x, y, sin(theta), cos(theta)]
-```
+data/
+  images/                  # локально генерируемые кадры, не коммитятся
+  labels.csv               # локально генерируемые метки, не коммитятся
+  cv_integrations/         # JSON-конфиги target-полей для CV
 
-RL-wrapper рендерит каждый кадр симулятора, пропускает его через CV-модель и
-использует предсказанное состояние как наблюдение для RL-агента.
+notebooks/
+  00_data/                 # генерация данных
+  01_cv/                   # CV-эксперименты
+  02_rl/                   # RL-эксперименты
+  03_experiments/          # смешанные эксперименты и отчёты
+
+src/lunar_lander_cvrl/
+  envs.py                  # Gymnasium wrapper для CV-derived observations
+  vision.py                # инференс CV-модели
+  models/cv/               # версии CV-моделей
+  models/rl/               # версии RL-моделей
+
+checkpoints/
+  cv/                      # локальные CV checkpoint'ы
+  rl/                      # локальные RL checkpoint'ы
+```
 
 ## Установка
 
@@ -36,54 +45,79 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Для LunarLander в Gymnasium нужен extra-пакет Box2D. На некоторых системах
-могут также понадобиться системные инструменты сборки.
+Для `LunarLander-v3` в Gymnasium используется Box2D. На некоторых системах для
+него могут понадобиться дополнительные системные инструменты сборки.
 
-## CV-модель
+## Данные
 
-В репозитории уже есть
-`checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth`. Этот checkpoint
-соответствует архитектуре `StateRegressorResNet18` из
-`src/lunar_lander_cvrl/vision.py`.
+Кадры и метки генерируются локально и не хранятся в git:
 
-Пример базового инференса:
+- `data/images/`
+- `data/labels.csv`
 
-```bash
-python -c "import numpy as np; from lunar_lander_cvrl import StatePredictor; p=StatePredictor('checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth', device='cpu'); print(p.predict_pose(np.load('data/images/frame_0000000.npy')))"
+Чтобы создать датасет, запустите notebook:
+
+```text
+notebooks/00_data/01_generate_images.ipynb
 ```
 
-### Обучение CV-регрессора
+Варианты CV-интеграции задаются через JSON-конфиги в
+`data/cv_integrations/`. Например, `x_y` берёт только координаты, а
+`x_y_theta` берёт координаты и угол. Dataloader читает общий `labels.csv` и
+использует только колонки из `target_columns`.
+
+## Обучение CV
 
 `train_cv.py` обучает CV-регрессор по выбранной интеграции и типу модели.
-Интеграция задаётся через `data/cv_integrations/<name>/metadata.json`: там
-указаны общие `images_dir`, `labels_file` и нужные `target_columns`.
+
+Пример:
 
 ```bash
 python train_cv.py \
   --integration x_y_theta \
   --model-type resnet18 \
-  --version resnet18_pose_v2 \
+  --version cv_pose_v1 \
   --epochs 20 \
   --batch-size 32 \
   --device cpu
 ```
 
-Доступные типы моделей:
+Доступные типы CV-моделей:
 
-- `resnet18`: ResNet18-регрессор, совместимый с текущим baseline.
-- `simple-cnn`: компактная CNN для быстрых экспериментов.
+- `resnet18`
+- `simple-cnn`
 
-Результаты сохраняются в `checkpoints/cv/<version>/`: веса `model.pth`, история
-обучения `history.json` и конфиг запуска `training_config.json`.
+Результаты сохраняются в:
 
-## Обучение RL-агента
+```text
+checkpoints/cv/<version>/
+```
 
-Режим по умолчанию — `hybrid`: CV предсказывает `x`, `y` и `theta`, а
-Gymnasium отдаёт настоящие скорости и контакты ног.
+В папке версии сохраняются веса `model.pth`, история обучения `history.json` и
+конфиг запуска `training_config.json`.
+
+## CV-инференс
+
+Пример инференса с обученным checkpoint'ом:
+
+```bash
+python -c "import numpy as np; from lunar_lander_cvrl import StatePredictor; p=StatePredictor('checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth', device='cpu'); print(p.predict_pose(np.load('data/images/frame_0000000.npy')))"
+```
+
+Для новых CV-версий можно передавать другой путь к весам. Если архитектура
+отличается от стандартной, используйте соответствующую модель при создании
+`StatePredictor` или добавьте отдельный predictor под новую версию.
+
+## Обучение RL
+
+`train_rl.py` обучает RL-агента на наблюдениях, полученных через CV-wrapper.
+Текущая реализация использует Stable-Baselines3 DQN.
 
 ```bash
 python train_rl.py \
   --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  --cv-model-type resnet18 \
+  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
   --timesteps 100000 \
   --seed 42 \
@@ -91,59 +125,56 @@ python train_rl.py \
   --obs-mode hybrid
 ```
 
-Для более строгого CV-only эксперимента:
+Режимы наблюдений:
+
+- `hybrid`: CV предсказывает `x`, `y`, `theta`, а Gymnasium отдаёт скорости и
+  контакты ног. Если CV-модель обучена только на `x_y`, то `hybrid` берёт
+  `x`, `y` из CV, а `theta` и остальные компоненты из Gymnasium.
+- `cv-only`: скорости оцениваются конечными разностями, контакты ног задаются
+  как `0.0`. Этот режим требует, чтобы CV-модель предсказывала `theta` или
+  `sin_theta/cos_theta`.
+
+Пример RL с CV-моделью без `theta`:
 
 ```bash
 python train_rl.py \
-  --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
-  --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander_cv_only.zip \
+  --cv-weights checkpoints/cv/x_y_model/model.pth \
+  --cv-model-type simple-cnn \
+  --cv-metadata data/cv_integrations/x_y/metadata.json \
+  --save-path checkpoints/rl/sb3_dqn/models/dqn_xy_hybrid.zip \
   --timesteps 100000 \
   --seed 42 \
   --device cpu \
-  --obs-mode cv-only
+  --obs-mode hybrid
 ```
 
-В режиме `cv-only` скорости оцениваются конечными разностями, а контакты ног
-задаются как `0.0`.
-
-### Обучение в несколько сессий
-
-Используйте `--resume`, чтобы продолжить обучение модели из `--save-path`.
-Каждый запуск добавляет ещё `--timesteps` шагов обучения, а затем перезаписывает
-`--save-path` обновлённой моделью.
+Для продолжения обучения используйте `--resume`:
 
 ```bash
 python train_rl.py \
   --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  --cv-model-type resnet18 \
+  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
   --timesteps 200000 \
   --seed 42 \
   --device cpu \
   --obs-mode hybrid \
-  --resume \
-  --checkpoint-freq 50000
+  --resume
 ```
 
-Для следующей сессии запустите ту же команду ещё раз. Периодические checkpoint'ы
-сохраняются в `checkpoints/rl/sb3_dqn/periodic/`; используйте
-`--checkpoint-freq 0`, чтобы отключить их. Для DQN скрипт также сохраняет replay
-buffer рядом с моделью, например
-`checkpoints/rl/sb3_dqn/models/dqn_vision_lander.replay_buffer.pkl`, и
-загружает его при следующем запуске с `--resume`.
+Новые версии RL-агентов можно добавлять в `src/lunar_lander_cvrl/models/rl/` и
+сохранять их артефакты в `checkpoints/rl/<agent_version>/`.
 
-### Визуализация обучения
+## Визуализация RL
 
-Добавьте `--visualize`, чтобы периодически рендерить текущую политику во время
-обучения. Скрипт сохраняет GIF-rollout'ы в `runs/visualizations/episodes/`,
-записывает `runs/visualizations/training_visualization.csv` и обновляет
-`runs/visualizations/training_rewards.png`.
-По умолчанию каждый GIF записывает полный эпизод, пока Gymnasium не вернёт
-`terminated` или `truncated`; используйте `--vis-max-steps N` только если явно
-нужен более короткий preview. Финальный GIF всегда сохраняется в конце обучения.
+Добавьте `--visualize`, чтобы периодически сохранять rollout'ы текущей политики:
 
 ```bash
 python train_rl.py \
   --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  --cv-model-type resnet18 \
+  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
   --timesteps 100000 \
   --seed 42 \
@@ -153,11 +184,15 @@ python train_rl.py \
   --vis-freq 10000
 ```
 
-## Оценка
+Визуализации и run-логи сохраняются в `runs/` и не коммитятся в git.
+
+## Оценка RL
 
 ```bash
 python evaluate_rl.py \
   --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  --cv-model-type resnet18 \
+  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --model-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
   --episodes 10 \
   --seed 100 \
@@ -165,18 +200,5 @@ python evaluate_rl.py \
   --obs-mode hybrid
 ```
 
-Оценка выводит среднюю награду, стандартное отклонение награды и количество
-успешных посадок. По умолчанию эпизод с reward `>= 200` считается успешным.
-
-## Заметки
-
-- `notebooks/00_data/01_generate_images.ipynb` генерирует датасет отрендеренных
-  кадров и метки.
-- `notebooks/01_cv/01_train_resnet_pose.ipynb` обучает и оценивает CV-checkpoint
-  ResNet18.
-- `data/images/` и `data/labels.csv` являются общим источником данных; варианты
-  CV-интеграции задают только `metadata.json` с нужными `target_columns`.
-- Доступные supervised-метки содержат только позу, без скоростей, контактов,
-  действий, наград и done-флагов.
-- Качество RL зависит от точности и обобщающей способности CV-модели.
-- Для полезной политики может потребоваться много шагов обучения.
+Скрипт выводит награду по эпизодам, среднюю награду, стандартное отклонение и
+число успешных посадок.

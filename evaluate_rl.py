@@ -22,11 +22,26 @@ except ImportError as exc:  # pragma: no cover - depends on optional package.
     ) from exc
 
 from lunar_lander_cvrl.envs import make_vision_lander_env
+from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cv-weights", required=True, help="Path to CV model weights.")
+    parser.add_argument(
+        "--cv-model-type",
+        choices=CV_MODEL_TYPES,
+        default="resnet18",
+        help="CV regressor architecture used by --cv-weights.",
+    )
+    parser.add_argument(
+        "--cv-metadata",
+        default=None,
+        help=(
+            "Path to CV integration metadata.json or checkpoint training_config.json. "
+            "Used to infer CV output columns such as x_y or x_y_theta."
+        ),
+    )
     parser.add_argument("--model-path", required=True, help="Path to a saved DQN model.")
     parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes.")
     parser.add_argument("--seed", type=int, default=42, help="Evaluation seed.")
@@ -50,6 +65,8 @@ def main() -> None:
     args = parse_args()
     env = make_vision_lander_env(
         cv_weights=args.cv_weights,
+        cv_model_type=args.cv_model_type,
+        cv_metadata=args.cv_metadata,
         device=args.device,
         obs_mode=args.obs_mode,
         seed=args.seed,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from .models.cv.resnet18_pose import StateRegressorResNet18
 from torch import nn
 
@@ -13,27 +13,39 @@ import torch
 
 
 @dataclass(frozen=True)
-class PredictedPose:
-    """Pose estimated from a rendered LunarLander RGB frame."""
+class PredictedState:
+    """State estimated from a rendered LunarLander RGB frame."""
 
     x: float
     y: float
-    theta: float
-    sin_theta: float
-    cos_theta: float
+    theta: float | None = None
+    sin_theta: float | None = None
+    cos_theta: float | None = None
 
     def as_pose_array(self) -> np.ndarray:
-        """Return ``[x, y, theta]`` as a float32 array."""
+        """Return ``[x, y, theta]`` as a float32 array.
 
-        return np.array([self.x, self.y, self.theta], dtype=np.float32)
+        If theta is not predicted by the model, NaN is used as a sentinel value.
+        """
+
+        theta = np.nan if self.theta is None else self.theta
+        return np.array([self.x, self.y, theta], dtype=np.float32)
 
     def as_model_array(self) -> np.ndarray:
         """Return ``[x, y, sin(theta), cos(theta)]`` as a float32 array."""
 
         return np.array(
-            [self.x, self.y, self.sin_theta, self.cos_theta],
+            [
+                self.x,
+                self.y,
+                np.nan if self.sin_theta is None else self.sin_theta,
+                np.nan if self.cos_theta is None else self.cos_theta,
+            ],
             dtype=np.float32,
         )
+
+
+PredictedPose = PredictedState
 
 
 def _resolve_device(device: str | torch.device) -> torch.device:
@@ -80,10 +92,12 @@ class StatePredictor:
         weights_path: str | Path,
         device: str | torch.device = "auto",
         model: nn.Module | None = None,
+        output_columns: Sequence[str] | None = None,
         strict: bool = True,
     ) -> None:
         self.device = _resolve_device(device)
         self.model = model if model is not None else StateRegressorResNet18()
+        self.output_columns = tuple(output_columns or ("x", "y", "sin_theta", "cos_theta"))
 
         state_dict = _load_state_dict(weights_path, self.device)
         self.model.load_state_dict(state_dict, strict=strict)
@@ -128,37 +142,54 @@ class StatePredictor:
         return tensor.unsqueeze(0)
 
     def predict_raw(self, frame: np.ndarray | torch.Tensor) -> np.ndarray:
-        """Return raw model output ``[x, y, sin(theta), cos(theta)]``."""
+        """Return raw model output in ``self.output_columns`` order."""
 
         inputs = self.preprocess(frame).to(self.device)
         with torch.inference_mode():
             prediction = self.model(inputs).squeeze(0)
-        return prediction.detach().cpu().numpy().astype(np.float32)
+        raw = prediction.detach().cpu().numpy().astype(np.float32)
+        if raw.shape[0] != len(self.output_columns):
+            raise ValueError(
+                "CV model output size does not match output_columns: "
+                f"got {raw.shape[0]}, expected {len(self.output_columns)} "
+                f"for {self.output_columns}.",
+            )
+        return raw
 
-    def predict_pose(self, frame: np.ndarray | torch.Tensor) -> PredictedPose:
-        """Return normalized ``x``, ``y`` and angle from a rendered frame."""
+    def predict_state(self, frame: np.ndarray | torch.Tensor) -> PredictedState:
+        """Return the state predicted by the configured CV model."""
 
         raw = self.predict_raw(frame)
-        sin_theta = float(raw[2])
-        cos_theta = float(raw[3])
-        norm = float(np.hypot(sin_theta, cos_theta))
-        if norm > 1e-8:
-            sin_theta /= norm
-            cos_theta /= norm
-        else:
-            sin_theta = 0.0
-            cos_theta = 1.0
+        values = {column: float(value) for column, value in zip(self.output_columns, raw)}
+        if "x" not in values or "y" not in values:
+            raise ValueError(f"CV output_columns must include x and y, got {self.output_columns}.")
 
-        theta = float(np.arctan2(sin_theta, cos_theta))
-        return PredictedPose(
-            x=float(raw[0]),
-            y=float(raw[1]),
+        theta = values.get("theta")
+        sin_theta = values.get("sin_theta")
+        cos_theta = values.get("cos_theta")
+
+        if theta is None and sin_theta is not None and cos_theta is not None:
+            norm = float(np.hypot(sin_theta, cos_theta))
+            if norm > 1e-8:
+                sin_theta /= norm
+                cos_theta /= norm
+            else:
+                sin_theta = 0.0
+                cos_theta = 1.0
+            theta = float(np.arctan2(sin_theta, cos_theta))
+        elif theta is not None and (sin_theta is None or cos_theta is None):
+            sin_theta = float(np.sin(theta))
+            cos_theta = float(np.cos(theta))
+
+        return PredictedState(
+            x=values["x"],
+            y=values["y"],
             theta=theta,
             sin_theta=sin_theta,
             cos_theta=cos_theta,
         )
 
-    def predict_state(self, frame: np.ndarray | torch.Tensor) -> np.ndarray:
-        """Return the CV state vector ``[x, y, sin(theta), cos(theta)]``."""
+    def predict_pose(self, frame: np.ndarray | torch.Tensor) -> PredictedState:
+        """Backward-compatible alias for ``predict_state``."""
 
-        return self.predict_pose(frame).as_model_array()
+        return self.predict_state(frame)

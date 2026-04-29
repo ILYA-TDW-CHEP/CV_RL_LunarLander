@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Literal
 
@@ -15,7 +16,8 @@ except ImportError as exc:  # pragma: no cover - exercised only without optional
         "Install project dependencies with: pip install -r requirements.txt",
     ) from exc
 
-from .vision import PredictedPose, StatePredictor
+from .vision import PredictedState, StatePredictor
+from .models.cv import build_cv_model
 
 ObservationMode = Literal["hybrid", "cv-only"]
 
@@ -46,15 +48,16 @@ class VisionStateLunarLanderWrapper(gym.Wrapper):
         self.state_predictor = state_predictor
         self.obs_mode = obs_mode
         self.diff_dt = float(diff_dt)
-        self._prev_pose: PredictedPose | None = None
+        self._prev_state: PredictedState | None = None
 
         self.observation_space = self._make_observation_space()
+        self._validate_cv_outputs()
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         """Reset the base environment and return a CV-derived observation."""
 
         true_obs, info = self.env.reset(seed=seed, options=options)
-        self._prev_pose = None
+        self._prev_state = None
         obs, vision_info = self._build_observation(true_obs)
         info = dict(info)
         info.update(vision_info)
@@ -94,17 +97,18 @@ class VisionStateLunarLanderWrapper(gym.Wrapper):
         return np.asarray(frame)
 
     def _build_observation(self, true_obs) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-        pose = self.state_predictor.predict_pose(self._render_rgb_frame())
+        state = self.state_predictor.predict_state(self._render_rgb_frame())
         true_obs = np.asarray(true_obs, dtype=np.float32)
+        theta = float(true_obs[4]) if state.theta is None else state.theta
 
         if self.obs_mode == "hybrid":
             obs = np.array(
                 [
-                    pose.x,
-                    pose.y,
+                    state.x,
+                    state.y,
                     float(true_obs[2]),
                     float(true_obs[3]),
-                    pose.theta,
+                    theta,
                     float(true_obs[5]),
                     float(true_obs[6]),
                     float(true_obs[7]),
@@ -112,23 +116,44 @@ class VisionStateLunarLanderWrapper(gym.Wrapper):
                 dtype=np.float32,
             )
         else:
-            vx, vy, angular_velocity = self._finite_difference_velocity(pose)
+            if state.theta is None:
+                raise ValueError(
+                    "obs_mode='cv-only' requires a CV model that predicts theta "
+                    "or sin_theta/cos_theta. Use obs_mode='hybrid' for x_y models.",
+                )
+            vx, vy, angular_velocity = self._finite_difference_velocity(state)
             obs = np.array(
-                [pose.x, pose.y, vx, vy, pose.theta, angular_velocity, 0.0, 0.0],
+                [state.x, state.y, vx, vy, state.theta, angular_velocity, 0.0, 0.0],
                 dtype=np.float32,
             )
 
-        self._prev_pose = pose
-        return obs, {"vision_pose": pose.as_pose_array()}
+        self._prev_state = state
+        return obs, {"vision_pose": state.as_pose_array()}
 
-    def _finite_difference_velocity(self, pose: PredictedPose) -> tuple[float, float, float]:
-        if self._prev_pose is None:
+    def _finite_difference_velocity(self, state: PredictedState) -> tuple[float, float, float]:
+        if self._prev_state is None:
             return 0.0, 0.0, 0.0
+        if self._prev_state.theta is None or state.theta is None:
+            raise ValueError("Finite-difference angular velocity requires theta predictions.")
 
-        vx = (pose.x - self._prev_pose.x) / self.diff_dt
-        vy = (pose.y - self._prev_pose.y) / self.diff_dt
-        dtheta = _wrap_angle(pose.theta - self._prev_pose.theta)
+        vx = (state.x - self._prev_state.x) / self.diff_dt
+        vy = (state.y - self._prev_state.y) / self.diff_dt
+        dtheta = _wrap_angle(state.theta - self._prev_state.theta)
         return float(vx), float(vy), float(dtheta / self.diff_dt)
+
+    def _validate_cv_outputs(self) -> None:
+        output_columns = set(self.state_predictor.output_columns)
+        if not {"x", "y"}.issubset(output_columns):
+            raise ValueError(
+                "CV output_columns must include x and y, "
+                f"got {self.state_predictor.output_columns}.",
+            )
+        has_theta = "theta" in output_columns or {"sin_theta", "cos_theta"}.issubset(output_columns)
+        if self.obs_mode == "cv-only" and not has_theta:
+            raise ValueError(
+                "obs_mode='cv-only' requires theta or sin_theta/cos_theta in CV output_columns. "
+                "Use obs_mode='hybrid' for x_y models.",
+            )
 
 
 def _wrap_angle(angle: float) -> float:
@@ -137,6 +162,9 @@ def _wrap_angle(angle: float) -> float:
 
 def make_vision_lander_env(
     cv_weights: str | Path,
+    cv_model_type: str = "resnet18",
+    cv_metadata: str | Path | None = None,
+    cv_output_columns: tuple[str, ...] | None = None,
     device: str = "auto",
     obs_mode: ObservationMode = "hybrid",
     seed: int | None = None,
@@ -144,7 +172,13 @@ def make_vision_lander_env(
 ) -> VisionStateLunarLanderWrapper:
     """Create a LunarLander env whose observations come from rendered frames."""
 
-    predictor = StatePredictor(cv_weights, device=device)
+    output_columns = _resolve_cv_output_columns(cv_metadata, cv_output_columns)
+    predictor = StatePredictor(
+        cv_weights,
+        device=device,
+        model=build_cv_model(cv_model_type, out_dim=len(output_columns)),
+        output_columns=output_columns,
+    )
     env = gym.make(
         env_id,
         render_mode="rgb_array",
@@ -154,3 +188,32 @@ def make_vision_lander_env(
     if seed is not None:
         env.action_space.seed(seed)
     return VisionStateLunarLanderWrapper(env, predictor, obs_mode=obs_mode)
+
+
+def _resolve_cv_output_columns(
+    cv_metadata: str | Path | None,
+    cv_output_columns: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if cv_output_columns is not None:
+        return tuple(cv_output_columns)
+    if cv_metadata is None:
+        return ("x", "y", "sin_theta", "cos_theta")
+
+    metadata_path = Path(cv_metadata)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    model_output_columns = metadata.get("model_output_columns")
+    if isinstance(model_output_columns, list) and all(isinstance(c, str) for c in model_output_columns):
+        return tuple(model_output_columns)
+
+    target_columns = metadata.get("target_columns")
+    if not isinstance(target_columns, list) or not all(isinstance(c, str) for c in target_columns):
+        raise ValueError(f"metadata target_columns must be a list of strings: {metadata_path}")
+
+    angle_target = metadata.get("angle_target", "sincos")
+    output_columns: list[str] = []
+    for column in target_columns:
+        if column == "theta" and angle_target == "sincos":
+            output_columns.extend(["sin_theta", "cos_theta"])
+        else:
+            output_columns.append(column)
+    return tuple(output_columns)
