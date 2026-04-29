@@ -1,0 +1,8 @@
+{
+  "name": "x_y_theta_velocity",
+  "description": "CV integration variant for LunarLander pose and velocity prediction.",
+  "images_dir": "../../images",
+  "labels_file": "../../labels.csv",
+  "target_columns": ["x", "y", "theta", "vx", "vy", "angular_velocity"],
+  "status": "placeholder"
+}

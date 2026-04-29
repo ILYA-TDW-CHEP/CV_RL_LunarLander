@@ -1,0 +1,8 @@
+{
+  "name": "x_y",
+  "description": "CV integration variant for LunarLander position prediction.",
+  "images_dir": "../../images",
+  "labels_file": "../../labels.csv",
+  "target_columns": ["x", "y"],
+  "status": "active"
+}
