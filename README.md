@@ -1,117 +1,71 @@
 # CV-RL LunarLander
 
-Проект для экспериментов на стыке computer vision и reinforcement learning в
-среде `LunarLander-v3`. Идея пайплайна: CV-модель получает RGB-кадр симулятора,
-предсказывает состояние аппарата, а RL-агент использует это состояние как
-наблюдение для управления посадкой.
+Проект про посадку LunarLander, где агент не получает состояние среды напрямую.
+Вместо этого симулятор отдает RGB-кадр, CV-модель восстанавливает по нему state,
+а RL-агент учится управлять посадкой уже по этому предсказанному состоянию.
 
-Проект сделан как пет-проект с возможностью менять обе части:
+Идея проекта — собрать небольшой end-to-end pipeline на стыке computer vision и
+reinforcement learning: от генерации кадров и обучения CV-регрессора до обучения
+RL-агента и визуализации его поведения.
 
-- CV-регрессор: можно выбирать архитектуру и набор target-полей через
-  `train_cv.py` и `data/cv_integrations/*/metadata.json`.
-- RL-агент: текущий CLI обучает Stable-Baselines3 DQN, а структура
-  `src/lunar_lander_cvrl/models/rl/` и `checkpoints/rl/` подготовлена под
-  будущие версии агентов.
+<p align="center">
+  <img src="data/Timeline.gif" width="720" alt="LunarLander CV-RL pipeline demo">
+</p>
 
-## Структура
+## Что внутри
 
-```text
-data/
-  images/                  # локально генерируемые кадры, не коммитятся
-  labels.csv               # локально генерируемые метки, не коммитятся
-  cv_integrations/         # JSON-конфиги target-полей для CV
-
-notebooks/
-  00_data/                 # генерация данных
-  01_cv/                   # CV-эксперименты
-  02_rl/                   # RL-эксперименты
-  03_experiments/          # смешанные эксперименты и отчёты
-
-src/lunar_lander_cvrl/
-  envs.py                  # Gymnasium wrapper для CV-derived observations
-  vision.py                # инференс CV-модели
-  models/cv/               # версии CV-моделей
-  models/rl/               # версии RL-моделей
-
-checkpoints/
-  cv/                      # локальные CV checkpoint'ы
-  rl/                      # локальные RL checkpoint'ы
-```
+- генерация изображений LunarLander и разметки состояния;
+- обучение CV-моделей для восстановления state по кадру;
+- несколько вариантов target state для CV-модели через `data/cv_integrations/`;
+- Gymnasium wrapper, который подменяет observation на CV-derived state;
+- обучение RL-агента через Stable-Baselines3 DQN;
+- сохранение GIF-эпизодов и графиков во время обучения.
 
 ## Установка
 
 ```bash
-pip install -r requirements.txt
-pip install -e .
+python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
-Для `LunarLander-v3` в Gymnasium используется Box2D. На некоторых системах для
-него могут понадобиться дополнительные системные инструменты сборки.
+Для `LunarLander-v3` используется Box2D. Если установка Gymnasium с Box2D падает,
+скорее всего не хватает системных build tools.
 
 ## Данные
 
-Кадры и метки генерируются локально и не хранятся в git:
-
-- `data/images/`
-- `data/labels.csv`
-
-Чтобы создать датасет, запустите notebook:
+Кадры и метки генерируются локально. Основные артефакты:
 
 ```text
-notebooks/00_data/01_generate_images.ipynb
+data/images/      # RGB-кадры симулятора
+data/labels.csv   # значения state для кадров
 ```
 
-Варианты CV-интеграции задаются через JSON-конфиги в
-`data/cv_integrations/`. Например, `x_y` берёт только координаты, а
-`x_y_theta` берёт координаты и угол. Dataloader читает общий `labels.csv` и
-использует только колонки из `target_columns`.
+Ноутбуки для генерации и экспериментов лежат в `notebooks/`.
 
-## Обучение CV
+## Обучение CV-модели
 
-`train_cv.py` обучает CV-регрессор по выбранной интеграции и типу модели.
-
-Пример:
+Пример обучения ResNet18 для предсказания `x`, `y` и `theta`:
 
 ```bash
 python train_cv.py \
   --integration x_y_theta \
   --model-type resnet18 \
-  --version cv_pose_v1 \
+  --version resnet18_pose \
   --epochs 20 \
   --batch-size 32 \
   --device cpu
 ```
 
-Доступные типы CV-моделей:
+Результаты сохраняются в `checkpoints/cv/<version>/`.
+
+Доступные варианты CV-моделей:
 
 - `resnet18`
 - `simple-cnn`
 
-Результаты сохраняются в:
+## Обучение RL-агента
 
-```text
-checkpoints/cv/<version>/
-```
-
-В папке версии сохраняются веса `model.pth`, история обучения `history.json` и
-конфиг запуска `training_config.json`.
-
-## CV-инференс
-
-Пример инференса с обученным checkpoint'ом:
-
-```bash
-python -c "import numpy as np; from lunar_lander_cvrl import StatePredictor; p=StatePredictor('checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth', device='cpu'); print(p.predict_pose(np.load('data/images/frame_0000000.npy')))"
-```
-
-Для новых CV-версий можно передавать другой путь к весам. Если архитектура
-отличается от стандартной, используйте соответствующую модель при создании
-`StatePredictor` или добавьте отдельный predictor под новую версию.
-
-## Обучение RL
-
-`train_rl.py` обучает RL-агента на наблюдениях, полученных через CV-wrapper.
-Текущая реализация использует Stable-Baselines3 DQN.
+Пример запуска DQN-агента с CV-моделью:
 
 ```bash
 python train_rl.py \
@@ -119,36 +73,23 @@ python train_rl.py \
   --cv-model-type resnet18 \
   --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --timesteps 100000 \
+  --timesteps 1000000 \
   --seed 42 \
   --device cpu \
   --obs-mode hybrid
 ```
 
-Режимы наблюдений:
+Режимы observation:
 
-- `hybrid`: CV предсказывает `x`, `y`, `theta`, а Gymnasium отдаёт скорости и
-  контакты ног. Если CV-модель обучена только на `x_y`, то `hybrid` берёт
-  `x`, `y` из CV, а `theta` и остальные компоненты из Gymnasium.
-- `cv-only`: скорости оцениваются конечными разностями, контакты ног задаются
-  как `0.0`. Этот режим требует, чтобы CV-модель предсказывала `theta` или
-  `sin_theta/cos_theta`.
+- `hybrid` — CV-модель предсказывает доступные компоненты state, а недостающие
+  компоненты берутся из Gymnasium. Это более устойчивый режим для обучения.
+- `cv-only` — observation строится только из предсказаний CV-модели. Этот режим
+  честнее с точки зрения CV-RL, но заметно сложнее для агента.
 
-Пример RL с CV-моделью без `theta`:
+## Визуализация обучения
 
-```bash
-python train_rl.py \
-  --cv-weights checkpoints/cv/x_y_model/model.pth \
-  --cv-model-type simple-cnn \
-  --cv-metadata data/cv_integrations/x_y/metadata.json \
-  --save-path checkpoints/rl/sb3_dqn/models/dqn_xy_hybrid.zip \
-  --timesteps 100000 \
-  --seed 42 \
-  --device cpu \
-  --obs-mode hybrid
-```
-
-Для продолжения обучения используйте `--resume`:
+Чтобы сохранять GIF-эпизоды и график reward во время обучения, добавьте
+`--visualize`:
 
 ```bash
 python train_rl.py \
@@ -156,37 +97,17 @@ python train_rl.py \
   --cv-model-type resnet18 \
   --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --timesteps 200000 \
-  --seed 42 \
-  --device cpu \
-  --obs-mode hybrid \
-  --resume
-```
-
-Новые версии RL-агентов можно добавлять в `src/lunar_lander_cvrl/models/rl/` и
-сохранять их артефакты в `checkpoints/rl/<agent_version>/`.
-
-## Визуализация RL
-
-Добавьте `--visualize`, чтобы периодически сохранять rollout'ы текущей политики:
-
-```bash
-python train_rl.py \
-  --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
-  --cv-model-type resnet18 \
-  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
-  --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --timesteps 100000 \
+  --timesteps 1000000 \
   --seed 42 \
   --device cpu \
   --obs-mode hybrid \
   --visualize \
-  --vis-freq 10000
+  --vis-freq 50000
 ```
 
-Визуализации и run-логи сохраняются в `runs/` и не коммитятся в git.
+Визуализации и логи сохраняются в `runs/`.
 
-## Оценка RL
+## Оценка
 
 ```bash
 python evaluate_rl.py \
@@ -194,11 +115,18 @@ python evaluate_rl.py \
   --cv-model-type resnet18 \
   --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
   --model-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --episodes 10 \
+  --episodes 20 \
   --seed 100 \
   --device cpu \
   --obs-mode hybrid
 ```
 
-Скрипт выводит награду по эпизодам, среднюю награду, стандартное отклонение и
-число успешных посадок.
+Скрипт выводит reward по эпизодам, средний reward, стандартное отклонение и
+количество успешных посадок.
+
+## Замечания
+
+Качество RL-агента сильно зависит от точности CV-модели. Если CV-модель плохо
+восстанавливает положение или угол аппарата, агент будет учиться на шумном
+state. Поэтому обычно имеет смысл сначала проверить CV-регрессию отдельно, а
+уже потом запускать длинное RL-обучение.
