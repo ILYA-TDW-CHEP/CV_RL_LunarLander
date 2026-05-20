@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset, random_split
+from torch.utils.data import DataLoader, Dataset
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -22,6 +22,8 @@ if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES, build_cv_model
+
+LabelSample = dict[str, float | str]
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,7 @@ class LunarLanderCVDataset(Dataset):
         augment: bool = True,
         particle_prob: float = 0.35,
         seed: int = 42,
+        samples: list[LabelSample] | None = None,
     ) -> None:
         self.config = config
         self.images_dir = config.images_dir
@@ -54,7 +57,11 @@ class LunarLanderCVDataset(Dataset):
         self.particle_prob = float(particle_prob)
         self.rng = np.random.default_rng(seed)
         self.output_columns = _make_output_columns(self.target_columns, angle_target)
-        self.samples = _read_label_rows(self.labels_file, self.target_columns)
+        self.samples = (
+            list(samples)
+            if samples is not None
+            else _read_label_rows(self.labels_file, self.target_columns)
+        )
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -72,7 +79,7 @@ class LunarLanderCVDataset(Dataset):
         target = self._make_target(sample)
         return torch.from_numpy(np.ascontiguousarray(image)), torch.from_numpy(target)
 
-    def _make_target(self, sample: dict[str, float | str]) -> np.ndarray:
+    def _make_target(self, sample: LabelSample) -> np.ndarray:
         values: list[float] = []
         for column in self.target_columns:
             value = float(sample[column])
@@ -375,7 +382,7 @@ def load_integration_config(integration: str, metadata_path: str | None) -> CVIn
     )
 
 
-def _read_label_rows(labels_file: Path, target_columns: list[str]) -> list[dict[str, float | str]]:
+def _read_label_rows(labels_file: Path, target_columns: list[str]) -> list[LabelSample]:
     with labels_file.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         fieldnames = set(reader.fieldnames or [])
@@ -384,9 +391,9 @@ def _read_label_rows(labels_file: Path, target_columns: list[str]) -> list[dict[
         if missing:
             raise ValueError(f"Labels file {labels_file} is missing columns: {missing}")
 
-        rows: list[dict[str, float | str]] = []
+        rows: list[LabelSample] = []
         for row in reader:
-            parsed: dict[str, float | str] = {"image_name": row["image_name"]}
+            parsed: LabelSample = {"image_name": row["image_name"]}
             for key, value in row.items():
                 if key == "image_name" or value is None or value == "":
                     continue
@@ -423,14 +430,35 @@ def make_loaders(
     if n_train <= 0:
         raise ValueError("Dataset is too small for the requested validation split.")
 
-    generator = torch.Generator().manual_seed(seed)
-    train_ds, val_ds = random_split(dataset, [n_train, n_val], generator=generator)
+    split_generator = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(n_total, generator=split_generator).tolist()
+    train_samples = [dataset.samples[i] for i in indices[:n_train]]
+    val_samples = [dataset.samples[i] for i in indices[n_train:]]
+
+    train_ds = LunarLanderCVDataset(
+        dataset.config,
+        angle_target=dataset.angle_target,
+        augment=dataset.augment,
+        particle_prob=dataset.particle_prob,
+        seed=seed,
+        samples=train_samples,
+    )
+    val_ds = LunarLanderCVDataset(
+        dataset.config,
+        angle_target=dataset.angle_target,
+        augment=False,
+        particle_prob=dataset.particle_prob,
+        seed=seed + 1,
+        samples=val_samples,
+    )
+
+    loader_generator = torch.Generator().manual_seed(seed + 2)
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        generator=generator,
+        generator=loader_generator,
     )
     val_loader = DataLoader(
         val_ds,
