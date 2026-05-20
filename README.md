@@ -8,6 +8,7 @@
 reinforcement learning: от генерации кадров и обучения CV-регрессора до обучения
 RL-агента и визуализации его поведения.
 
+
 <p align="center">
   <img src="data/Timeline.gif" width="720" alt="LunarLander CV-RL pipeline demo">
 </p>
@@ -94,6 +95,10 @@ python train_rl.py \
 
 ## Визуализация обучения
 
+<p align="center">
+  <img src="data/readme_noisy_true_pose.gif" width="720" alt="LunarLander landing with noisy pose overlay">
+</p>
+
 Чтобы сохранять GIF-эпизоды и график reward во время обучения, включите
 `visualization.enabled`:
 
@@ -112,7 +117,24 @@ python train_rl.py \
 ```
 
 Визуализации и логи сохраняются в `runs/`. `visualization.overlay_cv_pose=true`
-рисует простой зелёный bbox по предсказанным CV-моделью `x`, `y` и `theta`.
+рисует зелёный контур корпуса по выбранному источнику `x`, `y` и `theta`.
+По умолчанию используется CV-предсказание (`visualization.overlay_pose_source=vision`).
+Для демонстрационной GIF можно использовать реальный state с небольшим шумом:
+
+```bash
+python train_rl.py \
+  load.path=checkpoints/rl/sb3_dqn/periodic/dqn_vision_lander_1m_600000_steps.zip \
+  output.save_path=runs/readme_noisy_true_pose/tmp_dqn.zip \
+  visualization.dir=runs/readme_noisy_true_pose \
+  visualization.enabled=true \
+  visualization.overlay_cv_pose=true \
+  visualization.overlay_pose_source=true-noisy \
+  'visualization.overlay_noise_std=[0.01,0.01,0.045]' \
+  visualization.freq=1000000 \
+  rl.timesteps=1 \
+  checkpoint.freq=0 \
+  replay_buffer.save=false
+```
 
 ## Оценка
 
