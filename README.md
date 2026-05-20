@@ -57,6 +57,7 @@ python train_cv.py \
 ```
 
 Базовые настройки лежат в `configs/cv/train.yaml`.
+Для функции потерь используйте `loss.type`: доступны `mse`, `smooth_l1` и `l1`.
 
 Результаты сохраняются в `checkpoints/cv/<version>/`.
 

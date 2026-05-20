@@ -22,6 +22,9 @@ train:
 optimizer:
   lr: 1.0e-5
 
+loss:
+  type: mse
+
 augmentation:
   enabled: true
   particle_prob: 0.35

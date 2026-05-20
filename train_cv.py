@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import csv
 import json
-import math
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
 
 try:
     import hydra
@@ -26,156 +21,16 @@ SRC_DIR = PROJECT_ROOT / "src"
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from lunar_lander_cvrl.dataset import (
+    CVIntegrationConfig,
+    LabelSample,
+    LunarLanderCVDataset,
+    load_integration_config,
+)
+from lunar_lander_cvrl.dataloader import make_loaders
+from lunar_lander_cvrl.losses import LOSS_TYPES, build_loss
 from lunar_lander_cvrl.models.cv import build_cv_model
-
-LabelSample = dict[str, float | str]
-
-
-@dataclass(frozen=True)
-class CVIntegrationConfig:
-    name: str
-    metadata_path: Path
-    images_dir: Path
-    labels_file: Path
-    target_columns: list[str]
-    raw_metadata: dict[str, Any]
-
-
-class LunarLanderCVDataset(Dataset):
-    """Dataset driven by a CV integration metadata file."""
-
-    def __init__(
-        self,
-        config: CVIntegrationConfig,
-        angle_target: str = "sincos",
-        augment: bool = True,
-        particle_prob: float = 0.35,
-        seed: int = 42,
-        samples: list[LabelSample] | None = None,
-    ) -> None:
-        self.config = config
-        self.images_dir = config.images_dir
-        self.labels_file = config.labels_file
-        self.target_columns = config.target_columns
-        self.angle_target = angle_target
-        self.augment = augment
-        self.particle_prob = float(particle_prob)
-        self.rng = np.random.default_rng(seed)
-        self.output_columns = _make_output_columns(self.target_columns, angle_target)
-        self.samples = (
-            list(samples)
-            if samples is not None
-            else _read_label_rows(self.labels_file, self.target_columns)
-        )
-
-    def __len__(self) -> int:
-        return len(self.samples)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
-        sample = self.samples[idx]
-        image = np.load(self.images_dir / sample["image_name"]).astype(np.float32)
-        if image.max(initial=0.0) > 1.0:
-            image = image / 255.0
-
-        if self.augment and all(key in sample for key in ("x", "y", "theta")):
-            image = self._add_engine_particles(image, sample["x"], sample["y"], sample["theta"])
-
-        image = np.transpose(image[:, :, :3], (2, 0, 1))
-        target = self._make_target(sample)
-        return torch.from_numpy(np.ascontiguousarray(image)), torch.from_numpy(target)
-
-    def _make_target(self, sample: LabelSample) -> np.ndarray:
-        values: list[float] = []
-        for column in self.target_columns:
-            value = float(sample[column])
-            if column == "theta" and self.angle_target == "sincos":
-                values.extend([math.sin(value), math.cos(value)])
-            else:
-                values.append(value)
-        return np.asarray(values, dtype=np.float32)
-
-    def _obs_to_pixel(self, x_obs: float, y_obs: float, h: int, w: int) -> tuple[int, int]:
-        px = int(np.clip((x_obs + 1.0) * 0.5 * w, 0, w - 1))
-        py = int(np.clip(h * (0.705 - 0.5 * y_obs), 0, h - 1))
-        return px, py
-
-    def _draw_disk(
-        self,
-        image: np.ndarray,
-        cx: int,
-        cy: int,
-        radius: int,
-        color: np.ndarray,
-        alpha: float = 0.6,
-    ) -> np.ndarray:
-        h, w, _ = image.shape
-        x_min = max(0, cx - radius)
-        x_max = min(w, cx + radius + 1)
-        y_min = max(0, cy - radius)
-        y_max = min(h, cy + radius + 1)
-        if x_min >= x_max or y_min >= y_max:
-            return image
-
-        yy, xx = np.ogrid[y_min:y_max, x_min:x_max]
-        mask = (xx - cx) ** 2 + (yy - cy) ** 2 <= radius**2
-        patch = image[y_min:y_max, x_min:x_max].copy()
-        patch[mask] = (1.0 - alpha) * patch[mask] + alpha * color
-        image[y_min:y_max, x_min:x_max] = patch
-        return image
-
-    def _add_engine_particles(
-        self,
-        image: np.ndarray,
-        x_obs: float,
-        y_obs: float,
-        theta: float,
-    ) -> np.ndarray:
-        if self.rng.random() > self.particle_prob:
-            return image
-
-        h, w, _ = image.shape
-        cx, cy = self._obs_to_pixel(float(x_obs), float(y_obs), h, w)
-        body_size = max(10.0, 0.03 * w)
-        down = np.array([math.sin(theta), math.cos(theta)], dtype=np.float32)
-        right = np.array([math.cos(theta), -math.sin(theta)], dtype=np.float32)
-        center = np.array([cx, cy], dtype=np.float32)
-        main_nozzle = center + 0.85 * body_size * down
-        left_nozzle = center + 0.65 * body_size * down - 0.50 * body_size * right
-        right_nozzle = center + 0.65 * body_size * down + 0.50 * body_size * right
-
-        engine_specs = []
-        if self.rng.random() < 0.75:
-            engine_specs.append((main_nozzle, 4, 8, 0.25, 1.30))
-        if self.rng.random() < 0.30:
-            engine_specs.append((left_nozzle, 2, 4, 0.15, 0.75))
-        if self.rng.random() < 0.30:
-            engine_specs.append((right_nozzle, 2, 4, 0.15, 0.75))
-
-        for nozzle, n_min, n_max, spread_scale, length_scale in engine_specs:
-            n_particles = int(self.rng.integers(n_min, n_max + 1))
-            for _ in range(n_particles):
-                dist = float(self.rng.uniform(0.25 * body_size, length_scale * body_size))
-                lateral = float(self.rng.normal(0.0, spread_scale * body_size))
-                pos = nozzle + dist * down + lateral * right
-                radius = int(self.rng.integers(2, 6))
-                alpha = float(self.rng.uniform(0.35, 0.75))
-                color = np.array(
-                    [
-                        self.rng.uniform(0.90, 1.00),
-                        self.rng.uniform(0.10, 0.35),
-                        self.rng.uniform(0.00, 0.08),
-                    ],
-                    dtype=np.float32,
-                )
-                image = self._draw_disk(
-                    image,
-                    int(round(pos[0])),
-                    int(round(pos[1])),
-                    radius,
-                    color,
-                    alpha=alpha,
-                )
-        return image
+from lunar_lander_cvrl.training import evaluate_loss, run_epoch
 
 
 def run_training(args: SimpleNamespace) -> None:
@@ -187,7 +42,7 @@ def run_training(args: SimpleNamespace) -> None:
     dataset = LunarLanderCVDataset(
         config,
         angle_target=args.angle_target,
-        augment=not args.no_augment,
+        augment=args.augment,
         particle_prob=args.particle_prob,
         seed=args.seed,
     )
@@ -204,7 +59,7 @@ def run_training(args: SimpleNamespace) -> None:
 
     model = build_model(args.model_type, out_dim=len(dataset.output_columns)).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    criterion = nn.MSELoss()
+    criterion = build_loss(args.loss_type)
 
     print(f"Integration: {config.name}")
     print(f"Images: {config.images_dir}")
@@ -243,9 +98,10 @@ def run_training(args: SimpleNamespace) -> None:
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "lr": args.lr,
+        "loss_type": args.loss_type,
         "val_ratio": args.val_ratio,
         "seed": args.seed,
-        "augment": not args.no_augment,
+        "augment": args.augment,
         "particle_prob": args.particle_prob,
         "final_train_loss": history[-1]["train_loss"] if history else None,
         "final_val_loss": history[-1]["val_loss"] if history else None,
@@ -275,12 +131,13 @@ def _config_to_args(cfg) -> SimpleNamespace:
         epochs=cfg.train.epochs,
         batch_size=cfg.train.batch_size,
         lr=cfg.optimizer.lr,
+        loss_type=cfg.loss.type,
         val_ratio=cfg.data.val_ratio,
         seed=cfg.seed,
         device=cfg.device,
         num_workers=cfg.data.num_workers,
         limit_samples=cfg.data.limit_samples,
-        no_augment=not bool(cfg.augmentation.enabled),
+        augment=bool(cfg.augmentation.enabled),
         particle_prob=cfg.augmentation.particle_prob,
     )
 
@@ -310,6 +167,8 @@ def _validate_args(args: SimpleNamespace) -> None:
         raise ValueError("train.batch_size must be positive.")
     if args.lr <= 0:
         raise ValueError("optimizer.lr must be positive.")
+    if args.loss_type not in LOSS_TYPES:
+        raise ValueError(f"loss.type must be one of {LOSS_TYPES}, got {args.loss_type!r}.")
     if not 0.0 < args.val_ratio < 1.0:
         raise ValueError("data.val_ratio must be between 0 and 1.")
     if args.num_workers < 0:
@@ -336,173 +195,8 @@ def _resolve_device(device: str) -> torch.device:
     return resolved
 
 
-def load_integration_config(integration: str, metadata_path: str | None) -> CVIntegrationConfig:
-    path = (
-        Path(metadata_path)
-        if metadata_path is not None
-        else Path("data") / "cv_integrations" / integration / "metadata.json"
-    )
-    path = path.resolve()
-    if not path.exists():
-        raise FileNotFoundError(f"Integration metadata not found: {path}")
-
-    metadata = json.loads(path.read_text(encoding="utf-8"))
-    target_columns = metadata.get("target_columns")
-    if not isinstance(target_columns, list) or not all(isinstance(c, str) for c in target_columns):
-        raise ValueError(f"metadata target_columns must be a list of strings: {path}")
-
-    root = path.parent
-    images_dir = (root / metadata.get("images_dir", "../../images")).resolve()
-    labels_file = (root / metadata.get("labels_file", "../../labels.csv")).resolve()
-    if not images_dir.exists():
-        raise FileNotFoundError(f"Images directory not found: {images_dir}")
-    if not labels_file.exists():
-        raise FileNotFoundError(f"Labels file not found: {labels_file}")
-
-    return CVIntegrationConfig(
-        name=str(metadata.get("name", integration)),
-        metadata_path=path,
-        images_dir=images_dir,
-        labels_file=labels_file,
-        target_columns=target_columns,
-        raw_metadata=metadata,
-    )
-
-
-def _read_label_rows(labels_file: Path, target_columns: list[str]) -> list[LabelSample]:
-    with labels_file.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f)
-        fieldnames = set(reader.fieldnames or [])
-        required = {"image_name", *target_columns}
-        missing = sorted(required - fieldnames)
-        if missing:
-            raise ValueError(f"Labels file {labels_file} is missing columns: {missing}")
-
-        rows: list[LabelSample] = []
-        for row in reader:
-            parsed: LabelSample = {"image_name": row["image_name"]}
-            for key, value in row.items():
-                if key == "image_name" or value is None or value == "":
-                    continue
-                try:
-                    parsed[key] = float(value)
-                except ValueError:
-                    parsed[key] = value
-            rows.append(parsed)
-    if not rows:
-        raise ValueError(f"Labels file is empty: {labels_file}")
-    return rows
-
-
-def _make_output_columns(target_columns: list[str], angle_target: str) -> list[str]:
-    output_columns: list[str] = []
-    for column in target_columns:
-        if column == "theta" and angle_target == "sincos":
-            output_columns.extend(["sin_theta", "cos_theta"])
-        else:
-            output_columns.append(column)
-    return output_columns
-
-
-def make_loaders(
-    dataset: LunarLanderCVDataset,
-    val_ratio: float,
-    batch_size: int,
-    num_workers: int,
-    seed: int,
-) -> tuple[DataLoader, DataLoader]:
-    n_total = len(dataset)
-    n_val = max(1, int(round(n_total * val_ratio)))
-    n_train = n_total - n_val
-    if n_train <= 0:
-        raise ValueError("Dataset is too small for the requested validation split.")
-
-    split_generator = torch.Generator().manual_seed(seed)
-    indices = torch.randperm(n_total, generator=split_generator).tolist()
-    train_samples = [dataset.samples[i] for i in indices[:n_train]]
-    val_samples = [dataset.samples[i] for i in indices[n_train:]]
-
-    train_ds = LunarLanderCVDataset(
-        dataset.config,
-        angle_target=dataset.angle_target,
-        augment=dataset.augment,
-        particle_prob=dataset.particle_prob,
-        seed=seed,
-        samples=train_samples,
-    )
-    val_ds = LunarLanderCVDataset(
-        dataset.config,
-        angle_target=dataset.angle_target,
-        augment=False,
-        particle_prob=dataset.particle_prob,
-        seed=seed + 1,
-        samples=val_samples,
-    )
-
-    loader_generator = torch.Generator().manual_seed(seed + 2)
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        generator=loader_generator,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-    )
-    return train_loader, val_loader
-
-
 def build_model(model_type: str, out_dim: int) -> nn.Module:
     return build_cv_model(model_type, out_dim=out_dim)
-
-
-def run_epoch(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
-    optimizer: torch.optim.Optimizer,
-    device: torch.device,
-) -> float:
-    model.train()
-    total_loss = 0.0
-    total_samples = 0
-    for images, targets in loader:
-        images = images.to(device)
-        targets = targets.to(device)
-        preds = model(images)
-        loss = criterion(preds, targets)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        batch_size = images.size(0)
-        total_loss += float(loss.item()) * batch_size
-        total_samples += batch_size
-    return total_loss / max(1, total_samples)
-
-
-def evaluate_loss(
-    model: nn.Module,
-    loader: DataLoader,
-    criterion: nn.Module,
-    device: torch.device,
-) -> float:
-    model.eval()
-    total_loss = 0.0
-    total_samples = 0
-    with torch.inference_mode():
-        for images, targets in loader:
-            images = images.to(device)
-            targets = targets.to(device)
-            preds = model(images)
-            loss = criterion(preds, targets)
-            batch_size = images.size(0)
-            total_loss += float(loss.item()) * batch_size
-            total_samples += batch_size
-    return total_loss / max(1, total_samples)
 
 
 if __name__ == "__main__":
