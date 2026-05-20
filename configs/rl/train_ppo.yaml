@@ -1,0 +1,26 @@
+defaults:
+  - train
+  - _self_
+
+rl:
+  algorithm: ppo
+  timesteps: 1000000
+  gamma: 0.99
+  ppo:
+    learning_rate: 0.0003
+    n_steps: 1024
+    batch_size: 64
+    n_epochs: 10
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.0
+    vf_coef: 0.5
+
+output:
+  save_path: checkpoints/rl/sb3_ppo/models/ppo_vision_lander.zip
+
+checkpoint:
+  dir: checkpoints/rl/sb3_ppo/periodic
+
+replay_buffer:
+  save: false

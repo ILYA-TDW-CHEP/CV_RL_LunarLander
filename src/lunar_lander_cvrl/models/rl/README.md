@@ -1,6 +1,12 @@
-# Версии RL-моделей
+# RL models
 
-Размещайте здесь будущие реализации reinforcement-learning агентов и wrapper'ов.
+The main training entrypoint is `train_rl.py`. It supports Stable-Baselines3
+`DQN` and `PPO` through the Hydra field `rl.algorithm`.
 
-Текущая точка входа для обучения продолжает использовать Stable-Baselines3 DQN
-из `train_rl.py`.
+Useful configs:
+
+- `configs/rl/train.yaml` - DQN defaults.
+- `configs/rl/train_ppo.yaml` - PPO defaults.
+
+Shared SB3 helpers live in `utils.py`: argument validation, algorithm lookup,
+model construction, checkpoint loading and replay-buffer persistence.

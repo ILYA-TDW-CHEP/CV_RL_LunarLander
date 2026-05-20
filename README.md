@@ -19,7 +19,7 @@ RL-агента и визуализации его поведения.
 - обучение CV-моделей для восстановления state по кадру;
 - несколько вариантов target state для CV-модели через `data/cv_integrations/`;
 - Gymnasium wrapper, который подменяет observation на CV-derived state;
-- обучение RL-агента через Stable-Baselines3 DQN;
+- обучение RL-агента через Stable-Baselines3 DQN или PPO;
 - сохранение GIF-эпизодов и графиков во время обучения.
 
 ## Установка
@@ -86,6 +86,19 @@ python train_rl.py \
 
 Базовые настройки лежат в `configs/rl/train.yaml`.
 
+Для PPO есть отдельный конфиг:
+
+```bash
+python train_rl.py --config-name train_ppo \
+  cv.weights=checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  cv.model_type=resnet18 \
+  cv.metadata=data/cv_integrations/x_y_theta/metadata.json \
+  output.save_path=checkpoints/rl/sb3_ppo/models/ppo_vision_lander.zip \
+  rl.timesteps=1000000 \
+  device=cpu \
+  env.obs_mode=hybrid
+```
+
 Режимы observation:
 
 - `hybrid` — CV-модель предсказывает доступные компоненты state, а недостающие
@@ -143,6 +156,7 @@ python evaluate_rl.py \
   cv.weights=checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
   cv.model_type=resnet18 \
   cv.metadata=data/cv_integrations/x_y_theta/metadata.json \
+  model.algorithm=dqn \
   model.path=checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
   evaluation.episodes=20 \
   seed=100 \
@@ -150,7 +164,9 @@ python evaluate_rl.py \
   env.obs_mode=hybrid
 ```
 
-Базовые настройки оценки лежат в `configs/rl/evaluate.yaml`.
+Базовые настройки оценки лежат в `configs/rl/evaluate.yaml`. Для PPO можно
+использовать `--config-name evaluate_ppo` или явно передать
+`model.algorithm=ppo`.
 
 Скрипт выводит reward по эпизодам, средний reward, стандартное отклонение и
 количество успешных посадок.

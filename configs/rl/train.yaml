@@ -13,8 +13,29 @@ env:
   obs_mode: hybrid
 
 rl:
+  algorithm: dqn
   timesteps: 100000
   policy: MlpPolicy
+  gamma: 0.99
+  dqn:
+    learning_rate: 0.0001
+    buffer_size: 1000000
+    learning_starts: 100
+    batch_size: 32
+    train_freq: 4
+    gradient_steps: 1
+    target_update_interval: 10000
+    exploration_fraction: 0.1
+    exploration_final_eps: 0.05
+  ppo:
+    learning_rate: 0.0003
+    n_steps: 1024
+    batch_size: 64
+    n_epochs: 10
+    gae_lambda: 0.95
+    clip_range: 0.2
+    ent_coef: 0.0
+    vf_coef: 0.5
 
 output:
   save_path: checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip

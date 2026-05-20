@@ -1,0 +1,7 @@
+defaults:
+  - evaluate
+  - _self_
+
+model:
+  algorithm: ppo
+  path: checkpoints/rl/sb3_ppo/models/ppo_vision_lander.zip

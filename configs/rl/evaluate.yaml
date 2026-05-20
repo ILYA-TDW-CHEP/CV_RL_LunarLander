@@ -13,6 +13,7 @@ env:
   obs_mode: hybrid
 
 model:
+  algorithm: dqn
   path: checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip
 
 evaluation:

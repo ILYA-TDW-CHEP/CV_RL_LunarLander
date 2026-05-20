@@ -1,4 +1,4 @@
-"""Train a DQN agent on CV-derived LunarLander observations."""
+"""Train an SB3 agent on CV-derived LunarLander observations."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 try:
-    from stable_baselines3 import DQN
     from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
     from stable_baselines3.common.monitor import Monitor
 except ImportError as exc:  # pragma: no cover - depends on optional package.
@@ -27,19 +26,23 @@ except ImportError as exc:  # pragma: no cover - depends on optional package.
     ) from exc
 
 from lunar_lander_cvrl.envs import make_vision_lander_env
-from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES
+from lunar_lander_cvrl.models.rl.utils import (
+    create_sb3_model,
+    load_replay_buffer_if_available,
+    load_sb3_model,
+    resolve_replay_buffer_path,
+    save_model_artifacts,
+    select_load_path,
+    validate_training_args,
+)
 from lunar_lander_cvrl.visualization import TrainingVisualizationCallback
 
 
 def run_training(args: SimpleNamespace) -> None:
-    _validate_args(args)
+    validate_training_args(args)
     save_path = Path(args.save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    replay_buffer_path = (
-        Path(args.replay_buffer_path)
-        if args.replay_buffer_path
-        else save_path.with_suffix(".replay_buffer.pkl")
-    )
+    replay_buffer_path = resolve_replay_buffer_path(save_path, args.replay_buffer_path)
 
     env = Monitor(
         make_vision_lander_env(
@@ -82,14 +85,14 @@ def run_training(args: SimpleNamespace) -> None:
                 save_freq=args.checkpoint_freq,
                 save_path=str(checkpoint_dir),
                 name_prefix=save_path.stem,
-                save_replay_buffer=not args.no_save_replay_buffer,
+                save_replay_buffer=args.algorithm == "dqn" and not args.no_save_replay_buffer,
                 save_vecnormalize=True,
             ),
         )
 
     callback = CallbackList(callbacks) if callbacks else None
 
-    load_path = _select_load_path(
+    load_path = select_load_path(
         save_path=save_path,
         load_path=Path(args.load_path) if args.load_path else None,
         resume=args.resume,
@@ -97,59 +100,35 @@ def run_training(args: SimpleNamespace) -> None:
 
     try:
         if load_path is None:
-            model = DQN(
-                args.policy,
-                env,
-                verbose=1,
-                seed=args.seed,
-                device=args.device,
-            )
+            model = create_sb3_model(args, env)
             reset_num_timesteps = True
-            print("Starting a new DQN model.")
+            print(f"Starting a new {args.algorithm.upper()} model.")
         else:
-            model = DQN.load(load_path, env=env, device=args.device)
-            if not args.no_save_replay_buffer:
-                _load_replay_buffer_if_available(model, replay_buffer_path)
+            model = load_sb3_model(args, env, load_path)
+            if args.algorithm == "dqn" and not args.no_save_replay_buffer:
+                load_replay_buffer_if_available(model, replay_buffer_path)
             reset_num_timesteps = args.reset_num_timesteps
-            print(f"Loaded DQN model from {load_path}")
+            print(f"Loaded {args.algorithm.upper()} model from {load_path}")
 
         model.learn(
             total_timesteps=args.timesteps,
             callback=callback,
             reset_num_timesteps=reset_num_timesteps,
         )
-        model.save(save_path)
-        if not args.no_save_replay_buffer:
-            replay_buffer_path.parent.mkdir(parents=True, exist_ok=True)
-            model.save_replay_buffer(replay_buffer_path)
-            print(f"Saved replay buffer to {replay_buffer_path}")
-        print(f"Saved RL model to {save_path}")
+        save_model_artifacts(
+            model=model,
+            algorithm=args.algorithm,
+            save_path=save_path,
+            replay_buffer_path=replay_buffer_path,
+            save_replay_buffer=not args.no_save_replay_buffer,
+        )
     finally:
         env.close()
 
 
-def _select_load_path(save_path: Path, load_path: Path | None, resume: bool) -> Path | None:
-    if resume and save_path.exists():
-        return save_path
-    if load_path is not None:
-        if not load_path.exists():
-            raise FileNotFoundError(f"Requested load.path does not exist: {load_path}")
-        return load_path
-    if resume:
-        print(f"load.resume is true, but {save_path} does not exist yet. Starting from scratch.")
-    return None
-
-
-def _load_replay_buffer_if_available(model: DQN, replay_buffer_path: Path) -> None:
-    if replay_buffer_path.exists():
-        model.load_replay_buffer(replay_buffer_path)
-        print(f"Loaded replay buffer from {replay_buffer_path}")
-    else:
-        print(f"Replay buffer not found at {replay_buffer_path}; continuing without it.")
-
-
 def _config_to_args(cfg) -> SimpleNamespace:
     return SimpleNamespace(
+        algorithm=cfg.rl.algorithm,
         cv_weights=cfg.cv.weights,
         cv_model_type=cfg.cv.model_type,
         cv_metadata=cfg.cv.metadata,
@@ -159,6 +138,24 @@ def _config_to_args(cfg) -> SimpleNamespace:
         reset_num_timesteps=bool(cfg.load.reset_num_timesteps),
         timesteps=cfg.rl.timesteps,
         policy=cfg.rl.policy,
+        gamma=cfg.rl.gamma,
+        dqn_learning_rate=cfg.rl.dqn.learning_rate,
+        dqn_buffer_size=cfg.rl.dqn.buffer_size,
+        dqn_learning_starts=cfg.rl.dqn.learning_starts,
+        dqn_batch_size=cfg.rl.dqn.batch_size,
+        dqn_train_freq=cfg.rl.dqn.train_freq,
+        dqn_gradient_steps=cfg.rl.dqn.gradient_steps,
+        dqn_target_update_interval=cfg.rl.dqn.target_update_interval,
+        dqn_exploration_fraction=cfg.rl.dqn.exploration_fraction,
+        dqn_exploration_final_eps=cfg.rl.dqn.exploration_final_eps,
+        ppo_learning_rate=cfg.rl.ppo.learning_rate,
+        ppo_n_steps=cfg.rl.ppo.n_steps,
+        ppo_batch_size=cfg.rl.ppo.batch_size,
+        ppo_n_epochs=cfg.rl.ppo.n_epochs,
+        ppo_gae_lambda=cfg.rl.ppo.gae_lambda,
+        ppo_clip_range=cfg.rl.ppo.clip_range,
+        ppo_ent_coef=cfg.rl.ppo.ent_coef,
+        ppo_vf_coef=cfg.rl.ppo.vf_coef,
         seed=cfg.seed,
         device=cfg.device,
         obs_mode=cfg.env.obs_mode,
@@ -187,25 +184,6 @@ def _run_hydra_main() -> None:
         run_training(_config_to_args(cfg))
 
     _main()
-
-
-def _validate_args(args: SimpleNamespace) -> None:
-    if args.cv_model_type not in CV_MODEL_TYPES:
-        raise ValueError(f"cv.model_type must be one of {CV_MODEL_TYPES}, got {args.cv_model_type!r}.")
-    if args.obs_mode not in ("hybrid", "cv-only"):
-        raise ValueError("env.obs_mode must be either 'hybrid' or 'cv-only'.")
-    if args.policy != "MlpPolicy":
-        raise ValueError("Only rl.policy=MlpPolicy is supported by this training script.")
-    if args.timesteps <= 0:
-        raise ValueError("rl.timesteps must be positive.")
-    if args.visualize and args.vis_freq <= 0:
-        raise ValueError("visualization.freq must be positive.")
-    if args.visualize and args.vis_max_steps < 0:
-        raise ValueError("visualization.max_steps cannot be negative.")
-    if args.visualize and args.vis_fps <= 0:
-        raise ValueError("visualization.fps must be positive.")
-    if args.checkpoint_freq < 0:
-        raise ValueError("checkpoint.freq cannot be negative.")
 
 
 def main() -> None:
