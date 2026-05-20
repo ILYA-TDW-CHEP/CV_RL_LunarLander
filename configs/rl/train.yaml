@@ -30,6 +30,7 @@ visualization:
   freq: 10000
   max_steps: 0
   fps: 30
+  overlay_cv_pose: false
 
 checkpoint:
   dir: checkpoints/rl/sb3_dqn/periodic

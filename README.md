@@ -107,10 +107,12 @@ python train_rl.py \
   device=cpu \
   env.obs_mode=hybrid \
   visualization.enabled=true \
+  visualization.overlay_cv_pose=true \
   visualization.freq=50000
 ```
 
-Визуализации и логи сохраняются в `runs/`.
+Визуализации и логи сохраняются в `runs/`. `visualization.overlay_cv_pose=true`
+рисует простой зелёный bbox по предсказанным CV-моделью `x`, `y` и `theta`.
 
 ## Оценка
 

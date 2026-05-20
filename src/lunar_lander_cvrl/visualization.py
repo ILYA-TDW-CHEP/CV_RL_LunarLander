@@ -8,7 +8,7 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -22,6 +22,21 @@ except ImportError as exc:  # pragma: no cover - depends on optional package.
     ) from exc
 
 from .envs import VisionStateLunarLanderWrapper
+
+try:
+    from gymnasium.envs.box2d.lunar_lander import (
+        LANDER_POLY,
+        LEG_DOWN,
+        SCALE,
+        VIEWPORT_H,
+        VIEWPORT_W,
+    )
+except ImportError:  # pragma: no cover - imported when gymnasium[box2d] is available.
+    LANDER_POLY = [(-14, 17), (-17, 0), (-17, -10), (17, -10), (17, 0), (14, 17)]
+    LEG_DOWN = 18
+    SCALE = 30.0
+    VIEWPORT_H = 400
+    VIEWPORT_W = 600
 
 
 @dataclass(frozen=True)
@@ -44,6 +59,7 @@ class TrainingVisualizationCallback(BaseCallback):
         eval_freq: int = 10_000,
         max_episode_steps: int | None = None,
         fps: int = 30,
+        overlay_cv_pose: bool = False,
         seed: int = 42,
         verbose: int = 0,
     ) -> None:
@@ -61,6 +77,7 @@ class TrainingVisualizationCallback(BaseCallback):
         self.eval_freq = int(eval_freq)
         self.max_episode_steps = int(max_episode_steps) if max_episode_steps is not None else None
         self.fps = int(fps)
+        self.overlay_cv_pose = bool(overlay_cv_pose)
         self.seed = int(seed)
         self.records: list[VisualizationRecord] = []
 
@@ -103,17 +120,17 @@ class TrainingVisualizationCallback(BaseCallback):
     def _record_episode(self) -> tuple[float, int, Path]:
         frames: list[np.ndarray] = []
         episode_seed = self.seed + len(self.records)
-        obs, _ = self.eval_env.reset(seed=episode_seed)
-        frames.append(np.asarray(self.eval_env.render()))
+        obs, info = self.eval_env.reset(seed=episode_seed)
+        frames.append(self._render_frame(info))
 
         total_reward = 0.0
         episode_steps = 0
         while True:
             action, _ = self.model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, _ = self.eval_env.step(_as_scalar_action(action))
+            obs, reward, terminated, truncated, info = self.eval_env.step(_as_scalar_action(action))
             total_reward += float(reward)
             episode_steps += 1
-            frames.append(np.asarray(self.eval_env.render()))
+            frames.append(self._render_frame(info))
             if terminated or truncated:
                 break
             if self.max_episode_steps is not None and episode_steps >= self.max_episode_steps:
@@ -124,6 +141,12 @@ class TrainingVisualizationCallback(BaseCallback):
         )
         _save_gif(frames, gif_path, fps=self.fps)
         return total_reward, episode_steps, gif_path
+
+    def _render_frame(self, info: dict) -> np.ndarray:
+        frame = np.asarray(self.eval_env.render())
+        if not self.overlay_cv_pose:
+            return frame
+        return _draw_cv_pose_overlay(frame, info.get("vision_pose"))
 
     def _write_csv(self) -> None:
         csv_path = self.output_dir / "training_visualization.csv"
@@ -182,6 +205,64 @@ def _save_gif(frames: list[np.ndarray], path: Path, fps: int) -> None:
         duration=duration_ms,
         loop=0,
     )
+
+
+def _draw_cv_pose_overlay(frame: np.ndarray, vision_pose) -> np.ndarray:
+    """Draw a predicted lander body contour from ``[x, y, theta]`` pose info."""
+
+    if vision_pose is None:
+        return frame
+
+    pose = np.asarray(vision_pose, dtype=np.float32).reshape(-1)
+    if pose.size < 2 or not np.all(np.isfinite(pose[:2])):
+        return frame
+
+    image = Image.fromarray(_to_uint8_rgb(frame))
+    draw = ImageDraw.Draw(image)
+    img_w, img_h = image.size
+    cx, cy = _obs_to_pixel(float(pose[0]), float(pose[1]), img_h, img_w)
+
+    theta = float(pose[2]) if pose.size >= 3 and np.isfinite(pose[2]) else 0.0
+    polygon = [_body_vertex_to_pixel(x, y, theta, cx, cy, img_w, img_h) for x, y in LANDER_POLY]
+    color = (40, 255, 120)
+    draw.line([*polygon, polygon[0]], fill=color, width=3)
+
+    # Center mark and nose direction make angular errors easier to spot.
+    r = 4
+    draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=2)
+    nose = _body_vertex_to_pixel(0.0, 22.0, theta, cx, cy, img_w, img_h)
+    draw.line(
+        [(cx, cy), nose],
+        fill=color,
+        width=2,
+    )
+    return np.asarray(image)
+
+
+def _obs_to_pixel(x_obs: float, y_obs: float, h: int, w: int) -> tuple[int, int]:
+    base_y_px = (VIEWPORT_H / 4.0) + LEG_DOWN
+    px = int(np.clip((x_obs + 1.0) * 0.5 * w, 0, w - 1))
+    py_ref = VIEWPORT_H - (base_y_px + y_obs * VIEWPORT_H * 0.5)
+    py = int(np.clip(py_ref * h / VIEWPORT_H, 0, h - 1))
+    return px, py
+
+
+def _body_vertex_to_pixel(
+    x_local: float,
+    y_local: float,
+    theta: float,
+    cx: int,
+    cy: int,
+    img_w: int,
+    img_h: int,
+) -> tuple[int, int]:
+    scale_x = img_w / VIEWPORT_W
+    scale_y = img_h / VIEWPORT_H
+    cos_theta = float(np.cos(theta))
+    sin_theta = float(np.sin(theta))
+    dx = (cos_theta * x_local - sin_theta * y_local) * scale_x
+    dy = -(sin_theta * x_local + cos_theta * y_local) * scale_y
+    return int(round(cx + dx)), int(round(cy + dy))
 
 
 def _to_uint8_rgb(frame: np.ndarray) -> np.ndarray:
