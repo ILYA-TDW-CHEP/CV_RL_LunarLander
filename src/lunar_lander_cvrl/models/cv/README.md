@@ -5,4 +5,5 @@
 `train_cv.py` сейчас поддерживает:
 
 - `resnet18`
+- `efficientnet-b0`
 - `simple-cnn`

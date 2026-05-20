@@ -64,6 +64,7 @@ python train_cv.py \
 Доступные варианты CV-моделей:
 
 - `resnet18`
+- `efficientnet-b0`
 - `simple-cnn`
 
 ## Обучение RL-агента
