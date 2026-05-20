@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -16,12 +16,17 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+try:
+    import hydra
+except ImportError:  # pragma: no cover - exercised only without optional deps.
+    hydra = None
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
 if SRC_DIR.exists() and str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES, build_cv_model
+from lunar_lander_cvrl.models.cv import build_cv_model
 
 LabelSample = dict[str, float | str]
 
@@ -173,64 +178,7 @@ class LunarLanderCVDataset(Dataset):
         return image
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--integration",
-        default="x_y_theta",
-        help="CV integration variant under data/cv_integrations.",
-    )
-    parser.add_argument(
-        "--metadata-path",
-        default=None,
-        help="Optional explicit path to an integration metadata.json.",
-    )
-    parser.add_argument(
-        "--model-type",
-        choices=CV_MODEL_TYPES,
-        default="resnet18",
-        help="CV regressor architecture to train.",
-    )
-    parser.add_argument(
-        "--version",
-        default=None,
-        help="Checkpoint version folder name. Defaults to <model-type>_<integration>.",
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="checkpoints/cv",
-        help="Root directory for CV checkpoint versions.",
-    )
-    parser.add_argument(
-        "--angle-target",
-        choices=("sincos", "raw"),
-        default="sincos",
-        help="How to encode theta targets when target_columns contains theta.",
-    )
-    parser.add_argument("--epochs", type=int, default=20, help="Number of training epochs.")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size.")
-    parser.add_argument("--lr", type=float, default=1e-5, help="Adam learning rate.")
-    parser.add_argument("--val-ratio", type=float, default=0.2, help="Validation split ratio.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--device", default="auto", help="Torch device: auto, cpu, or cuda.")
-    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader worker count.")
-    parser.add_argument("--limit-samples", type=int, default=0, help="Optional smoke-test sample limit.")
-    parser.add_argument(
-        "--no-augment",
-        action="store_true",
-        help="Disable engine-particle augmentation.",
-    )
-    parser.add_argument(
-        "--particle-prob",
-        type=float,
-        default=0.35,
-        help="Probability of adding synthetic engine particles when augmentation is enabled.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+def run_training(args: SimpleNamespace) -> None:
     _validate_args(args)
     _seed_everything(args.seed)
 
@@ -316,21 +264,60 @@ def main() -> None:
     print(f"Saved training metadata to {version_dir / 'training_config.json'}")
 
 
-def _validate_args(args: argparse.Namespace) -> None:
+def _config_to_args(cfg) -> SimpleNamespace:
+    return SimpleNamespace(
+        integration=cfg.data.integration,
+        metadata_path=cfg.data.metadata_path,
+        model_type=cfg.model.type,
+        version=cfg.output.version,
+        output_dir=cfg.output.dir,
+        angle_target=cfg.data.angle_target,
+        epochs=cfg.train.epochs,
+        batch_size=cfg.train.batch_size,
+        lr=cfg.optimizer.lr,
+        val_ratio=cfg.data.val_ratio,
+        seed=cfg.seed,
+        device=cfg.device,
+        num_workers=cfg.data.num_workers,
+        limit_samples=cfg.data.limit_samples,
+        no_augment=not bool(cfg.augmentation.enabled),
+        particle_prob=cfg.augmentation.particle_prob,
+    )
+
+
+def _run_hydra_main() -> None:
+    if hydra is None:
+        raise SystemExit(
+            "Hydra is required for config-driven CV training. "
+            "Install dependencies with: pip install -r requirements.txt",
+        )
+
+    @hydra.main(version_base=None, config_path="configs/cv", config_name="train")
+    def _main(cfg) -> None:
+        run_training(_config_to_args(cfg))
+
+    _main()
+
+
+def main() -> None:
+    _run_hydra_main()
+
+
+def _validate_args(args: SimpleNamespace) -> None:
     if args.epochs <= 0:
-        raise ValueError("--epochs must be positive.")
+        raise ValueError("train.epochs must be positive.")
     if args.batch_size <= 0:
-        raise ValueError("--batch-size must be positive.")
+        raise ValueError("train.batch_size must be positive.")
     if args.lr <= 0:
-        raise ValueError("--lr must be positive.")
+        raise ValueError("optimizer.lr must be positive.")
     if not 0.0 < args.val_ratio < 1.0:
-        raise ValueError("--val-ratio must be between 0 and 1.")
+        raise ValueError("data.val_ratio must be between 0 and 1.")
     if args.num_workers < 0:
-        raise ValueError("--num-workers cannot be negative.")
+        raise ValueError("data.num_workers cannot be negative.")
     if args.limit_samples < 0:
-        raise ValueError("--limit-samples cannot be negative.")
+        raise ValueError("data.limit_samples cannot be negative.")
     if not 0.0 <= args.particle_prob <= 1.0:
-        raise ValueError("--particle-prob must be between 0 and 1.")
+        raise ValueError("augmentation.particle_prob must be between 0 and 1.")
 
 
 def _seed_everything(seed: int) -> None:

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+
+try:
+    import hydra
+except ImportError:  # pragma: no cover - exercised only without optional deps.
+    hydra = None
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -25,44 +30,8 @@ from lunar_lander_cvrl.envs import make_vision_lander_env
 from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cv-weights", required=True, help="Path to CV model weights.")
-    parser.add_argument(
-        "--cv-model-type",
-        choices=CV_MODEL_TYPES,
-        default="resnet18",
-        help="CV regressor architecture used by --cv-weights.",
-    )
-    parser.add_argument(
-        "--cv-metadata",
-        default=None,
-        help=(
-            "Path to CV integration metadata.json or checkpoint training_config.json. "
-            "Used to infer CV output columns such as x_y or x_y_theta."
-        ),
-    )
-    parser.add_argument("--model-path", required=True, help="Path to a saved DQN model.")
-    parser.add_argument("--episodes", type=int, default=10, help="Number of evaluation episodes.")
-    parser.add_argument("--seed", type=int, default=42, help="Evaluation seed.")
-    parser.add_argument("--device", default="auto", help="Torch/SB3 device: auto, cpu, or cuda.")
-    parser.add_argument(
-        "--obs-mode",
-        choices=("hybrid", "cv-only"),
-        default="hybrid",
-        help="Observation mode for the vision wrapper.",
-    )
-    parser.add_argument(
-        "--success-threshold",
-        type=float,
-        default=200.0,
-        help="Episode reward threshold counted as a successful landing.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+def run_evaluation(args: SimpleNamespace) -> None:
+    _validate_args(args)
     env = make_vision_lander_env(
         cv_weights=args.cv_weights,
         cv_model_type=args.cv_model_type,
@@ -96,6 +65,47 @@ def main() -> None:
     print(f"Mean reward: {float(np.mean(rewards_array)):.2f}")
     print(f"Std reward: {float(np.std(rewards_array)):.2f}")
     print(f"Successful landings: {successes}/{args.episodes}")
+
+
+def _config_to_args(cfg) -> SimpleNamespace:
+    return SimpleNamespace(
+        cv_weights=cfg.cv.weights,
+        cv_model_type=cfg.cv.model_type,
+        cv_metadata=cfg.cv.metadata,
+        model_path=cfg.model.path,
+        episodes=cfg.evaluation.episodes,
+        seed=cfg.seed,
+        device=cfg.device,
+        obs_mode=cfg.env.obs_mode,
+        success_threshold=cfg.evaluation.success_threshold,
+    )
+
+
+def _run_hydra_main() -> None:
+    if hydra is None:
+        raise SystemExit(
+            "Hydra is required for config-driven RL evaluation. "
+            "Install dependencies with: pip install -r requirements.txt",
+        )
+
+    @hydra.main(version_base=None, config_path="configs/rl", config_name="evaluate")
+    def _main(cfg) -> None:
+        run_evaluation(_config_to_args(cfg))
+
+    _main()
+
+
+def _validate_args(args: SimpleNamespace) -> None:
+    if args.cv_model_type not in CV_MODEL_TYPES:
+        raise ValueError(f"cv.model_type must be one of {CV_MODEL_TYPES}, got {args.cv_model_type!r}.")
+    if args.obs_mode not in ("hybrid", "cv-only"):
+        raise ValueError("env.obs_mode must be either 'hybrid' or 'cv-only'.")
+    if args.episodes <= 0:
+        raise ValueError("evaluation.episodes must be positive.")
+
+
+def main() -> None:
+    _run_hydra_main()
 
 
 if __name__ == "__main__":

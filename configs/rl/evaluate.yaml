@@ -1,0 +1,29 @@
+defaults:
+  - _self_
+
+seed: 42
+device: auto
+
+cv:
+  weights: checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth
+  model_type: resnet18
+  metadata: data/cv_integrations/x_y_theta/metadata.json
+
+env:
+  obs_mode: hybrid
+
+model:
+  path: checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip
+
+evaluation:
+  episodes: 10
+  success_threshold: 200.0
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: runs/hydra/rl_eval/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: runs/hydra/rl_eval_multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

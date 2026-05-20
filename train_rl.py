@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-import argparse
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+try:
+    import hydra
+except ImportError:  # pragma: no cover - exercised only without optional deps.
+    hydra = None
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 SRC_DIR = PROJECT_ROOT / "src"
@@ -26,113 +31,8 @@ from lunar_lander_cvrl.models.cv import CV_MODEL_TYPES
 from lunar_lander_cvrl.visualization import TrainingVisualizationCallback
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cv-weights", required=True, help="Path to CV model weights.")
-    parser.add_argument(
-        "--cv-model-type",
-        choices=CV_MODEL_TYPES,
-        default="resnet18",
-        help="CV regressor architecture used by --cv-weights.",
-    )
-    parser.add_argument(
-        "--cv-metadata",
-        default=None,
-        help=(
-            "Path to CV integration metadata.json or checkpoint training_config.json. "
-            "Used to infer CV output columns such as x_y or x_y_theta."
-        ),
-    )
-    parser.add_argument("--save-path", required=True, help="Where to save the trained RL model.")
-    parser.add_argument(
-        "--load-path",
-        default=None,
-        help="Optional existing DQN model to continue training from.",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Load --save-path if it already exists, then train for more timesteps.",
-    )
-    parser.add_argument(
-        "--reset-num-timesteps",
-        action="store_true",
-        help="When loading a model, reset SB3's timestep counter instead of continuing it.",
-    )
-    parser.add_argument(
-        "--timesteps",
-        type=int,
-        default=100_000,
-        help="DQN timesteps to run in this session.",
-    )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--device", default="auto", help="Torch/SB3 device: auto, cpu, or cuda.")
-    parser.add_argument(
-        "--obs-mode",
-        choices=("hybrid", "cv-only"),
-        default="hybrid",
-        help="Observation mode for the vision wrapper.",
-    )
-    parser.add_argument(
-        "--visualize",
-        action="store_true",
-        help="Periodically render the current policy and save GIFs/plots.",
-    )
-    parser.add_argument(
-        "--vis-dir",
-        default="runs/visualizations",
-        help="Directory for training GIFs and reward plots.",
-    )
-    parser.add_argument(
-        "--vis-freq",
-        type=int,
-        default=10_000,
-        help="Save one visualization every N training timesteps.",
-    )
-    parser.add_argument(
-        "--vis-max-steps",
-        type=int,
-        default=0,
-        help=(
-            "Maximum episode length used for each visualization rollout. "
-            "Use 0 to record a full episode until terminated/truncated."
-        ),
-    )
-    parser.add_argument(
-        "--vis-fps",
-        type=int,
-        default=30,
-        help="FPS for saved visualization GIFs.",
-    )
-    parser.add_argument(
-        "--checkpoint-dir",
-        default="checkpoints/rl/sb3_dqn/periodic",
-        help="Directory for periodic SB3 checkpoints.",
-    )
-    parser.add_argument(
-        "--checkpoint-freq",
-        type=int,
-        default=50_000,
-        help="Save an SB3 checkpoint every N environment steps. Use 0 to disable.",
-    )
-    parser.add_argument(
-        "--replay-buffer-path",
-        default=None,
-        help=(
-            "Path for DQN replay buffer persistence. Defaults to the save path "
-            "with .replay_buffer.pkl suffix."
-        ),
-    )
-    parser.add_argument(
-        "--no-save-replay-buffer",
-        action="store_true",
-        help="Do not save/load the DQN replay buffer between sessions.",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+def run_training(args: SimpleNamespace) -> None:
+    _validate_args(args)
     save_path = Path(args.save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
     replay_buffer_path = (
@@ -197,7 +97,7 @@ def main() -> None:
     try:
         if load_path is None:
             model = DQN(
-                "MlpPolicy",
+                args.policy,
                 env,
                 verbose=1,
                 seed=args.seed,
@@ -232,10 +132,10 @@ def _select_load_path(save_path: Path, load_path: Path | None, resume: bool) -> 
         return save_path
     if load_path is not None:
         if not load_path.exists():
-            raise FileNotFoundError(f"Requested --load-path does not exist: {load_path}")
+            raise FileNotFoundError(f"Requested load.path does not exist: {load_path}")
         return load_path
     if resume:
-        print(f"--resume was set, but {save_path} does not exist yet. Starting from scratch.")
+        print(f"load.resume is true, but {save_path} does not exist yet. Starting from scratch.")
     return None
 
 
@@ -245,6 +145,69 @@ def _load_replay_buffer_if_available(model: DQN, replay_buffer_path: Path) -> No
         print(f"Loaded replay buffer from {replay_buffer_path}")
     else:
         print(f"Replay buffer not found at {replay_buffer_path}; continuing without it.")
+
+
+def _config_to_args(cfg) -> SimpleNamespace:
+    return SimpleNamespace(
+        cv_weights=cfg.cv.weights,
+        cv_model_type=cfg.cv.model_type,
+        cv_metadata=cfg.cv.metadata,
+        save_path=cfg.output.save_path,
+        load_path=cfg.load.path,
+        resume=bool(cfg.load.resume),
+        reset_num_timesteps=bool(cfg.load.reset_num_timesteps),
+        timesteps=cfg.rl.timesteps,
+        policy=cfg.rl.policy,
+        seed=cfg.seed,
+        device=cfg.device,
+        obs_mode=cfg.env.obs_mode,
+        visualize=bool(cfg.visualization.enabled),
+        vis_dir=cfg.visualization.dir,
+        vis_freq=cfg.visualization.freq,
+        vis_max_steps=cfg.visualization.max_steps,
+        vis_fps=cfg.visualization.fps,
+        checkpoint_dir=cfg.checkpoint.dir,
+        checkpoint_freq=cfg.checkpoint.freq,
+        replay_buffer_path=cfg.replay_buffer.path,
+        no_save_replay_buffer=not bool(cfg.replay_buffer.save),
+    )
+
+
+def _run_hydra_main() -> None:
+    if hydra is None:
+        raise SystemExit(
+            "Hydra is required for config-driven RL training. "
+            "Install dependencies with: pip install -r requirements.txt",
+        )
+
+    @hydra.main(version_base=None, config_path="configs/rl", config_name="train")
+    def _main(cfg) -> None:
+        run_training(_config_to_args(cfg))
+
+    _main()
+
+
+def _validate_args(args: SimpleNamespace) -> None:
+    if args.cv_model_type not in CV_MODEL_TYPES:
+        raise ValueError(f"cv.model_type must be one of {CV_MODEL_TYPES}, got {args.cv_model_type!r}.")
+    if args.obs_mode not in ("hybrid", "cv-only"):
+        raise ValueError("env.obs_mode must be either 'hybrid' or 'cv-only'.")
+    if args.policy != "MlpPolicy":
+        raise ValueError("Only rl.policy=MlpPolicy is supported by this training script.")
+    if args.timesteps <= 0:
+        raise ValueError("rl.timesteps must be positive.")
+    if args.visualize and args.vis_freq <= 0:
+        raise ValueError("visualization.freq must be positive.")
+    if args.visualize and args.vis_max_steps < 0:
+        raise ValueError("visualization.max_steps cannot be negative.")
+    if args.visualize and args.vis_fps <= 0:
+        raise ValueError("visualization.fps must be positive.")
+    if args.checkpoint_freq < 0:
+        raise ValueError("checkpoint.freq cannot be negative.")
+
+
+def main() -> None:
+    _run_hydra_main()
 
 
 if __name__ == "__main__":

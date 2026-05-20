@@ -44,17 +44,19 @@ data/labels.csv   # значения state для кадров
 
 ## Обучение CV-модели
 
-Пример обучения ResNet18 для предсказания `x`, `y` и `theta`:
+Пример обучения ResNet18 для предсказания `x`, `y` и `theta` через Hydra-конфиг:
 
 ```bash
 python train_cv.py \
-  --integration x_y_theta \
-  --model-type resnet18 \
-  --version resnet18_pose \
-  --epochs 20 \
-  --batch-size 32 \
-  --device cpu
+  data.integration=x_y_theta \
+  model.type=resnet18 \
+  output.version=resnet18_pose \
+  train.epochs=20 \
+  train.batch_size=32 \
+  device=cpu
 ```
+
+Базовые настройки лежат в `configs/cv/train.yaml`.
 
 Результаты сохраняются в `checkpoints/cv/<version>/`.
 
@@ -65,19 +67,21 @@ python train_cv.py \
 
 ## Обучение RL-агента
 
-Пример запуска DQN-агента с CV-моделью:
+Пример запуска DQN-агента с CV-моделью через Hydra-конфиг:
 
 ```bash
 python train_rl.py \
-  --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
-  --cv-model-type resnet18 \
-  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
-  --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --timesteps 1000000 \
-  --seed 42 \
-  --device cpu \
-  --obs-mode hybrid
+  cv.weights=checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  cv.model_type=resnet18 \
+  cv.metadata=data/cv_integrations/x_y_theta/metadata.json \
+  output.save_path=checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
+  rl.timesteps=1000000 \
+  seed=42 \
+  device=cpu \
+  env.obs_mode=hybrid
 ```
+
+Базовые настройки лежат в `configs/rl/train.yaml`.
 
 Режимы observation:
 
@@ -88,21 +92,20 @@ python train_rl.py \
 
 ## Визуализация обучения
 
-Чтобы сохранять GIF-эпизоды и график reward во время обучения, добавьте
-`--visualize`:
+Чтобы сохранять GIF-эпизоды и график reward во время обучения, включите
+`visualization.enabled`:
 
 ```bash
 python train_rl.py \
-  --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
-  --cv-model-type resnet18 \
-  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
-  --save-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --timesteps 1000000 \
-  --seed 42 \
-  --device cpu \
-  --obs-mode hybrid \
-  --visualize \
-  --vis-freq 50000
+  cv.weights=checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  cv.metadata=data/cv_integrations/x_y_theta/metadata.json \
+  output.save_path=checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
+  rl.timesteps=1000000 \
+  seed=42 \
+  device=cpu \
+  env.obs_mode=hybrid \
+  visualization.enabled=true \
+  visualization.freq=50000
 ```
 
 Визуализации и логи сохраняются в `runs/`.
@@ -111,15 +114,17 @@ python train_rl.py \
 
 ```bash
 python evaluate_rl.py \
-  --cv-weights checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
-  --cv-model-type resnet18 \
-  --cv-metadata data/cv_integrations/x_y_theta/metadata.json \
-  --model-path checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
-  --episodes 20 \
-  --seed 100 \
-  --device cpu \
-  --obs-mode hybrid
+  cv.weights=checkpoints/cv/resnet18_pose/state_regressor_resnet18.pth \
+  cv.model_type=resnet18 \
+  cv.metadata=data/cv_integrations/x_y_theta/metadata.json \
+  model.path=checkpoints/rl/sb3_dqn/models/dqn_vision_lander.zip \
+  evaluation.episodes=20 \
+  seed=100 \
+  device=cpu \
+  env.obs_mode=hybrid
 ```
+
+Базовые настройки оценки лежат в `configs/rl/evaluate.yaml`.
 
 Скрипт выводит reward по эпизодам, средний reward, стандартное отклонение и
 количество успешных посадок.
