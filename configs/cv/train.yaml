@@ -1,0 +1,40 @@
+defaults:
+  - _self_
+
+seed: 42
+device: auto
+
+data:
+  integration: x_y_theta
+  metadata_path: null
+  angle_target: sincos
+  val_ratio: 0.2
+  num_workers: 0
+  limit_samples: 0
+
+model:
+  type: resnet18
+
+train:
+  epochs: 20
+  batch_size: 32
+
+optimizer:
+  lr: 1.0e-5
+
+augmentation:
+  enabled: true
+  particle_prob: 0.35
+
+output:
+  dir: checkpoints/cv
+  version: null
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: runs/hydra/cv/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: runs/hydra/cv_multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
