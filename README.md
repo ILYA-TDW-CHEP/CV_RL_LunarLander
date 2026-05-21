@@ -132,17 +132,14 @@ python train_rl.py \
 Визуализации и логи сохраняются в `runs/`. `visualization.overlay_cv_pose=true`
 рисует зелёный контур корпуса по выбранному источнику `x`, `y` и `theta`.
 По умолчанию используется CV-предсказание (`visualization.overlay_pose_source=vision`).
-Для демонстрационной GIF можно использовать реальный state с небольшим шумом:
 
 ```bash
 python train_rl.py \
   load.path=checkpoints/rl/sb3_dqn/periodic/dqn_vision_lander_1m_600000_steps.zip \
-  output.save_path=runs/readme_noisy_true_pose/tmp_dqn.zip \
-  visualization.dir=runs/readme_noisy_true_pose \
+  output.save_path=runs/readme_run/tmp_dqn.zip \
+  visualization.dir=runs/readme_run \
   visualization.enabled=true \
   visualization.overlay_cv_pose=true \
-  visualization.overlay_pose_source=true-noisy \
-  'visualization.overlay_noise_std=[0.01,0.01,0.045]' \
   visualization.freq=1000000 \
   rl.timesteps=1 \
   checkpoint.freq=0 \
